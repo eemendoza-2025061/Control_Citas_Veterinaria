@@ -45,4 +45,22 @@ public class MascotaController {
     public ResponseEntity<MascotaDto.Response> ficha(@PathVariable Long id) {
         return ResponseEntity.ok(mascotaService.ficha(id));
     }
+
+    // CLIENTE (suya) + ADMIN (cualquiera): actualización completa.
+    @PutMapping("/{id}")
+    @PreAuthorize("hasAnyRole('CLIENTE','ADMIN')")
+    public ResponseEntity<MascotaDto.Response> actualizar(
+            @PathVariable Long id,
+            @Valid @RequestBody MascotaDto.UpdateRequest req,
+            Authentication auth) {
+        return ResponseEntity.ok(mascotaService.actualizar(id, req, auth.getName()));
+    }
+
+    // CLIENTE (suya) + ADMIN (cualquiera): borrado si no tiene citas.
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasAnyRole('CLIENTE','ADMIN')")
+    public ResponseEntity<Void> eliminar(@PathVariable Long id, Authentication auth) {
+        mascotaService.eliminar(id, auth.getName());
+        return ResponseEntity.noContent().build();
+    }
 }

@@ -18,6 +18,16 @@ public class ExpedienteDto {
         private Double pesoKg;
     }
 
+    @Getter @Setter @NoArgsConstructor @AllArgsConstructor
+    public static class UpdateRequest {
+        // Sin citaId a propósito: el expediente NO se mueve de cita.
+        @NotBlank(message = "diagnostico es obligatorio")
+        private String diagnostico;
+        @NotBlank(message = "tratamiento es obligatorio")
+        private String tratamiento;
+        private Double pesoKg;
+    }
+
     @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
     public static class Response {
         private Long id;

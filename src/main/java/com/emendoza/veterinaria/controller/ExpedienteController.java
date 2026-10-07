@@ -33,4 +33,21 @@ public class ExpedienteController {
             @PathVariable Long mascotaId, Authentication auth) {
         return ResponseEntity.ok(expedienteService.historialPorMascota(mascotaId, auth.getName()));
     }
+
+    // VET + ADMIN: corrige diagnóstico/tratamiento/peso (la cita no cambia).
+    @PutMapping("/{id}")
+    @PreAuthorize("hasAnyRole('VET','ADMIN')")
+    public ResponseEntity<ExpedienteDto.Response> actualizar(
+            @PathVariable Long id,
+            @Valid @RequestBody ExpedienteDto.UpdateRequest req) {
+        return ResponseEntity.ok(expedienteService.actualizar(id, req));
+    }
+
+    // Solo ADMIN: borra el expediente (su cita COMPLETADA vuelve a PENDIENTE).
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<Void> eliminar(@PathVariable Long id) {
+        expedienteService.eliminar(id);
+        return ResponseEntity.noContent().build();
+    }
 }

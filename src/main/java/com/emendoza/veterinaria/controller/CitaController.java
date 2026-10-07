@@ -50,4 +50,22 @@ public class CitaController {
     public ResponseEntity<CitaDto.Response> cancelar(@PathVariable Long id, Authentication auth) {
         return ResponseEntity.ok(citaService.cancelar(id, auth.getName()));
     }
+
+    // CLIENTE (suya) + ADMIN (cualquiera): reprograma vet/fecha/motivo.
+    @PutMapping("/{id}")
+    @PreAuthorize("hasAnyRole('CLIENTE','ADMIN')")
+    public ResponseEntity<CitaDto.Response> actualizar(
+            @PathVariable Long id,
+            @Valid @RequestBody CitaDto.UpdateRequest req,
+            Authentication auth) {
+        return ResponseEntity.ok(citaService.actualizar(id, req, auth.getName()));
+    }
+
+    // CLIENTE (suya) + ADMIN (cualquiera): borrado físico solo CANCELADA.
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasAnyRole('CLIENTE','ADMIN')")
+    public ResponseEntity<Void> eliminar(@PathVariable Long id, Authentication auth) {
+        citaService.eliminar(id, auth.getName());
+        return ResponseEntity.noContent().build();
+    }
 }

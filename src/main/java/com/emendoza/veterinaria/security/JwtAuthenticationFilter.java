@@ -27,13 +27,19 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         String header = request.getHeader("Authorization");
         if (header != null && header.startsWith("Bearer ")) {
             String token = header.substring(7);
-            if (jwtUtil.valido(token) && SecurityContextHolder.getContext().getAuthentication() == null) {
-                String email = jwtUtil.email(token);
-                UserDetails ud = userDetailsService.loadUserByUsername(email);
-                UsernamePasswordAuthenticationToken auth =
-                        new UsernamePasswordAuthenticationToken(ud, null, ud.getAuthorities());
-                auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                SecurityContextHolder.getContext().setAuthentication(auth);
+            try {
+                if (jwtUtil.valido(token) && SecurityContextHolder.getContext().getAuthentication() == null) {
+                    String email = jwtUtil.email(token);
+                    UserDetails ud = userDetailsService.loadUserByUsername(email);
+                    UsernamePasswordAuthenticationToken auth =
+                            new UsernamePasswordAuthenticationToken(ud, null, ud.getAuthorities());
+                    auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                    SecurityContextHolder.getContext().setAuthentication(auth);
+                }
+            } catch (Exception e) {
+                // Token inválido o usuario eliminado: no autenticar.
+                // El entry point de SecurityConfig responderá 401.
+                SecurityContextHolder.clearContext();
             }
         }
         chain.doFilter(request, response);

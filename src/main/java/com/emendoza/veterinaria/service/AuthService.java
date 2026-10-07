@@ -6,6 +6,7 @@ import com.emendoza.veterinaria.exception.BusinessRuleException;
 import com.emendoza.veterinaria.repository.UsuarioRepository;
 import com.emendoza.veterinaria.security.JwtUtil;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.authentication.*;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -33,7 +34,12 @@ public class AuthService {
                 .password(passwordEncoder.encode(req.getPassword()))
                 .rol(Usuario.Rol.CLIENTE)
                 .build();
-        usuarioRepository.save(u);
+        try {
+            usuarioRepository.saveAndFlush(u);
+        } catch (DataIntegrityViolationException e) {
+            // Carrera: dos registros simultáneos con el mismo email (unique email).
+            throw new BusinessRuleException("El email ya está registrado");
+        }
         String token = jwtUtil.generarToken(u.getEmail(), u.getRol().name());
         return new AuthDto.AuthResponse(token, u.getEmail(), u.getRol().name());
     }

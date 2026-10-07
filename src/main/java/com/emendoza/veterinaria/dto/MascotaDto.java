@@ -20,6 +20,17 @@ public class MascotaDto {
         private Long clienteId;
     }
 
+    @Getter @Setter @NoArgsConstructor @AllArgsConstructor
+    public static class UpdateRequest {
+        // Sin clienteId a propósito: el dueño NUNCA cambia por update.
+        @NotBlank(message = "nombre es obligatorio")
+        private String nombre;
+        @NotNull(message = "especie es obligatoria")
+        private Mascota.Especie especie;
+        private String raza;
+        private Integer edad;
+    }
+
     @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
     public static class Response {
         private Long id;

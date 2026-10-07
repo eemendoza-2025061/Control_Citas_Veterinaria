@@ -84,11 +84,17 @@ Las tablas y los 3 usuarios iniciales los crea la app al arrancar.
 | GET | `/api/v1/mascotas/mis-mascotas?page&size` | CLIENTE (usa el JWT) |
 | POST | `/api/v1/mascotas` | CLIENTE (propia), ADMIN (+`clienteId`) |
 | GET | `/api/v1/mascotas/{id}` | VET, ADMIN |
+| PUT | `/api/v1/mascotas/{id}` (dueño no cambia) | CLIENTE (propia), ADMIN |
+| DELETE | `/api/v1/mascotas/{id}` (solo sin citas) | CLIENTE (propia), ADMIN |
 | POST | `/api/v1/citas` | CLIENTE, ADMIN |
 | GET | `/api/v1/citas/agenda?veterinarioId&desde&hasta&page&size` | VET, ADMIN |
 | PATCH | `/api/v1/citas/{id}/cancelar` | CLIENTE, ADMIN |
+| PUT | `/api/v1/citas/{id}` (reprogramar; mascota no cambia) | CLIENTE (propia), ADMIN |
+| DELETE | `/api/v1/citas/{id}` (solo CANCELADA, sin expediente) | CLIENTE (propia), ADMIN |
 | POST | `/api/v1/expedientes` | VET, ADMIN |
 | GET | `/api/v1/expedientes/mascota/{mascotaId}` | VET, CLIENTE (propia), ADMIN |
+| PUT | `/api/v1/expedientes/{id}` (la cita no cambia) | VET, ADMIN |
+| DELETE | `/api/v1/expedientes/{id}` (cita COMPLETADA→PENDIENTE) | ADMIN |
 
 Autenticación: `Authorization: Bearer <JWT>`. Errores estandarizados vía
 `@RestControllerAdvice` (`timestamp, status, error, message, path`).
