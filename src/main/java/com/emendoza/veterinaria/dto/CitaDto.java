@@ -20,6 +20,18 @@ public class CitaDto {
         private String motivo;
     }
 
+    @Getter @Setter @NoArgsConstructor @AllArgsConstructor
+    public static class UpdateRequest {
+        // Sin mascotaId a propósito: la mascota (y su dueño) NO cambian por
+        // update. Solo se permite reprogramar vet/fecha y editar el motivo.
+        @NotNull(message = "veterinarioId es obligatorio")
+        private Long veterinarioId;
+        @NotNull(message = "fechaHora es obligatoria")
+        @Future(message = "fechaHora debe ser futura")
+        private LocalDateTime fechaHora;
+        private String motivo;
+    }
+
     @Getter @Setter @NoArgsConstructor @AllArgsConstructor @Builder
     public static class Response {
         private Long id;
