@@ -5,7 +5,15 @@ import lombok.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "citas_medicas", indexes = {
+@Table(name = "citas_medicas",
+    uniqueConstraints = {
+        // Segunda barrera ante carreras de duplicado exacto (mismo vet + mismo
+        // instante). El solapamiento de 30 min se valida en el service con
+        // bloqueo pesimista; este constraint convierte un duplicado exacto
+        // concurrente en DataIntegrityViolationException -> 409.
+        @UniqueConstraint(name = "uk_cita_vet_fechahora", columnNames = {"veterinario_id", "fechaHora"})
+    },
+    indexes = {
         @Index(name = "idx_cita_vet_fecha", columnList = "veterinario_id, fechaHora"),
         @Index(name = "idx_cita_mascota", columnList = "mascota_id"),
         @Index(name = "idx_cita_estado", columnList = "estado")
