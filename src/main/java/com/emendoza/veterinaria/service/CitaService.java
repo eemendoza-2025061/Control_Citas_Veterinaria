@@ -5,11 +5,13 @@ import com.emendoza.veterinaria.entity.CitaMedica;
 import com.emendoza.veterinaria.entity.Mascota;
 import com.emendoza.veterinaria.entity.Usuario;
 import com.emendoza.veterinaria.exception.BusinessRuleException;
+import com.emendoza.veterinaria.exception.ForbiddenOperationException;
 import com.emendoza.veterinaria.exception.ResourceNotFoundException;
 import com.emendoza.veterinaria.repository.CitaMedicaRepository;
 import com.emendoza.veterinaria.repository.MascotaRepository;
 import com.emendoza.veterinaria.repository.UsuarioRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.*;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,6 +42,16 @@ public class CitaService {
 
     // Reglas: 1) Vet sin cruce de 30 min. 2) Máx 2 PENDIENTES/día por CLIENTE.
     // 3) CLIENTE solo agenda para sus propias mascotas (ADMIN sí puede todo).
+    //
+    // Concurrencia: el clásico exists()+save() permite duplicados cuando dos
+    // hilos verifican a la vez. Un lock sobre el rango no sirve si el rango
+    // está vacío (no hay filas que bloquear -> phantom). Por eso se bloquean
+    // con PESSIMISTIC_WRITE las filas del VETERINARIO y del CLIENTE dueño
+    // (siempre en orden ascendente de id para evitar deadlocks): todas las
+    // reservas concurrentes para el mismo vet/cliente se serializan dentro de
+    // esta transacción, y la verificación + inserción se vuelven atómicas.
+    // Como segunda barrera, la BD tiene UNIQUE(veterinario_id, fechaHora) para
+    // el duplicado exacto -> DataIntegrityViolationException -> 409.
     @Transactional
     public CitaDto.Response agendarCita(CitaDto.Request req, String emailAutenticado) {
         Usuario auth = usuarioRepository.findByEmail(emailAutenticado)
@@ -50,7 +62,7 @@ public class CitaService {
 
         if (auth.getRol() == Usuario.Rol.CLIENTE
                 && !mascota.getCliente().getId().equals(auth.getId())) {
-            throw new BusinessRuleException("Solo puede agendar citas para sus propias mascotas");
+            throw new ForbiddenOperationException("Solo puede agendar citas para sus propias mascotas");
         }
 
         Usuario vet = usuarioRepository.findById(req.getVeterinarioId())
@@ -64,10 +76,25 @@ public class CitaService {
             throw new BusinessRuleException("La cita debe programarse en el futuro");
         }
 
-        // Regla 1: duración fija 30 min, sin cruce. Ventana (fechaHora-29min, fechaHora+30min).
-        LocalDateTime finCita = fechaHora.plusMinutes(30);
-        boolean hayCruce = citaRepository.existsByVeterinarioIdAndFechaHoraBetweenAndEstadoNot(
-                vet.getId(), fechaHora.minusMinutes(29), finCita, CitaMedica.Estado.CANCELADA);
+        Long duenoId = mascota.getCliente().getId();
+
+        // Bloqueo pesimista en orden ascendente de id (anti-deadlock).
+        Long primero = vet.getId() < duenoId ? vet.getId() : duenoId;
+        Long segundo = vet.getId() < duenoId ? duenoId : vet.getId();
+        usuarioRepository.findByIdForUpdate(primero)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
+        if (!segundo.equals(primero)) {
+            usuarioRepository.findByIdForUpdate(segundo)
+                    .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
+        }
+
+        // Regla 1: duración fija 30 min, sin cruce (|diff| < 30 min solapa).
+        // Desigualdad estricta: 10:00 y 10:30 solo se tocan -> se permiten;
+        // 10:00 y 10:15 solapan -> se rechazan.
+        LocalDateTime inicioVentana = fechaHora.minusMinutes(30);
+        LocalDateTime finVentana = fechaHora.plusMinutes(30);
+        boolean hayCruce = citaRepository.existsSolapamientoVet(
+                vet.getId(), inicioVentana, finVentana, CitaMedica.Estado.CANCELADA);
         if (hayCruce) {
             throw new BusinessRuleException("El veterinario no tiene disponibilidad en ese horario.");
         }
@@ -76,7 +103,7 @@ public class CitaService {
         LocalDateTime inicioDia = fechaHora.toLocalDate().atStartOfDay();
         LocalDateTime finDia = inicioDia.plusDays(1).minusNanos(1);
         long activas = citaRepository.countCitasPendientesPorClienteYFecha(
-                mascota.getCliente().getId(), inicioDia, finDia, CitaMedica.Estado.PENDIENTE);
+                duenoId, inicioDia, finDia, CitaMedica.Estado.PENDIENTE);
         if (activas >= 2) {
             throw new BusinessRuleException("El cliente ya posee el límite de 2 citas pendientes para este día.");
         }
@@ -88,7 +115,11 @@ public class CitaService {
                 .motivo(req.getMotivo())
                 .estado(CitaMedica.Estado.PENDIENTE)
                 .build();
-        return toResponse(citaRepository.save(cita));
+        try {
+            return toResponse(citaRepository.saveAndFlush(cita));
+        } catch (DataIntegrityViolationException e) {
+            throw new BusinessRuleException("El veterinario ya tiene una cita en ese horario.");
+        }
     }
 
     @Transactional(readOnly = true)
@@ -101,7 +132,8 @@ public class CitaService {
         return page.map(this::toResponse);
     }
 
-    // Regla 3: solo se cancela si faltan MÁS de 2 horas. CLIENTE solo cancela lo suyo.
+    // Regla 3: solo se cancela si faltan MÁS de 2 horas (estricto: 120 min exactos NO bastan).
+    // CLIENTE solo cancela lo suyo.
     @Transactional
     public CitaDto.Response cancelar(Long citaId, String emailAutenticado) {
         Usuario auth = usuarioRepository.findByEmail(emailAutenticado)
@@ -114,13 +146,102 @@ public class CitaService {
         }
         if (auth.getRol() == Usuario.Rol.CLIENTE
                 && !cita.getMascota().getCliente().getId().equals(auth.getId())) {
-            throw new BusinessRuleException("Solo puede cancelar citas de sus propias mascotas");
+            throw new ForbiddenOperationException("Solo puede cancelar citas de sus propias mascotas");
         }
-        long minutosRestantes = Duration.between(LocalDateTime.now(), cita.getFechaHora()).toMinutes();
-        if (minutosRestantes < 120) {
+        Duration restante = Duration.between(LocalDateTime.now(), cita.getFechaHora());
+        if (restante.compareTo(Duration.ofHours(2)) <= 0) {
             throw new BusinessRuleException("La cita solo puede cancelarse con más de 2 horas de anticipación");
         }
         cita.setEstado(CitaMedica.Estado.CANCELADA);
         return toResponse(citaRepository.save(cita));
+    }
+
+    // Reprogramar cita: CLIENTE solo las suyas; ADMIN cualquiera.
+    // Solo PENDIENTE. Se revalidan TODAS las reglas (futuro, vet VET, cruce
+    // 30 min excluyendo la propia cita, límite 2/día excluyendo la propia).
+    // La mascota NO cambia (el DTO no la trae). Con bloqueo pesimista igual
+    // que en agendarCita para evitar carreras concurrentes.
+    @Transactional
+    public CitaDto.Response actualizar(Long citaId, CitaDto.UpdateRequest req, String emailAutenticado) {
+        Usuario auth = usuarioRepository.findByEmail(emailAutenticado)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario autenticado no encontrado"));
+        CitaMedica cita = citaRepository.findById(citaId)
+                .orElseThrow(() -> new ResourceNotFoundException("Cita no encontrada"));
+
+        if (cita.getEstado() != CitaMedica.Estado.PENDIENTE) {
+            throw new BusinessRuleException("Solo se pueden reprogramar citas en estado PENDIENTE");
+        }
+        if (auth.getRol() == Usuario.Rol.CLIENTE
+                && !cita.getMascota().getCliente().getId().equals(auth.getId())) {
+            throw new ForbiddenOperationException("Solo puede modificar citas de sus propias mascotas");
+        }
+
+        Usuario vet = usuarioRepository.findById(req.getVeterinarioId())
+                .orElseThrow(() -> new ResourceNotFoundException("Veterinario no encontrado"));
+        if (vet.getRol() != Usuario.Rol.VET) {
+            throw new BusinessRuleException("El usuario indicado no es VET");
+        }
+
+        LocalDateTime fechaHora = req.getFechaHora();
+        if (fechaHora.isBefore(LocalDateTime.now().plusMinutes(1))) {
+            throw new BusinessRuleException("La cita debe programarse en el futuro");
+        }
+
+        Long duenoId = cita.getMascota().getCliente().getId();
+        Long primero = vet.getId() < duenoId ? vet.getId() : duenoId;
+        Long segundo = vet.getId() < duenoId ? duenoId : vet.getId();
+        usuarioRepository.findByIdForUpdate(primero)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
+        if (!segundo.equals(primero)) {
+            usuarioRepository.findByIdForUpdate(segundo)
+                    .orElseThrow(() -> new ResourceNotFoundException("Usuario no encontrado"));
+        }
+
+        boolean hayCruce = citaRepository.existsSolapamientoVetExcluyendo(
+                vet.getId(), fechaHora.minusMinutes(30), fechaHora.plusMinutes(30),
+                CitaMedica.Estado.CANCELADA, citaId);
+        if (hayCruce) {
+            throw new BusinessRuleException("El veterinario no tiene disponibilidad en ese horario.");
+        }
+
+        LocalDateTime inicioDia = fechaHora.toLocalDate().atStartOfDay();
+        LocalDateTime finDia = inicioDia.plusDays(1).minusNanos(1);
+        long activas = citaRepository.countCitasPendientesPorClienteYFechaExcluyendo(
+                duenoId, inicioDia, finDia, CitaMedica.Estado.PENDIENTE, citaId);
+        if (activas >= 2) {
+            throw new BusinessRuleException("El cliente ya posee el límite de 2 citas pendientes para este día.");
+        }
+
+        cita.setVeterinario(vet);
+        cita.setFechaHora(fechaHora);
+        cita.setMotivo(req.getMotivo());
+        try {
+            return toResponse(citaRepository.saveAndFlush(cita));
+        } catch (DataIntegrityViolationException e) {
+            throw new BusinessRuleException("El veterinario ya tiene una cita en ese horario.");
+        }
+    }
+
+    // Borrado físico: CLIENTE solo las suyas; ADMIN cualquiera.
+    // Solo CANCELADA (una PENDIENTE debe cancelarse, no borrarse: así no se
+    // evade la regla de las 2 horas; una COMPLETADA tiene historial clínico
+    // que debe conservarse). Con expediente asociado tampoco se borra.
+    @Transactional
+    public void eliminar(Long citaId, String emailAutenticado) {
+        Usuario auth = usuarioRepository.findByEmail(emailAutenticado)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario autenticado no encontrado"));
+        CitaMedica cita = citaRepository.findById(citaId)
+                .orElseThrow(() -> new ResourceNotFoundException("Cita no encontrada"));
+        if (auth.getRol() == Usuario.Rol.CLIENTE
+                && !cita.getMascota().getCliente().getId().equals(auth.getId())) {
+            throw new ForbiddenOperationException("Solo puede eliminar citas de sus propias mascotas");
+        }
+        if (cita.getEstado() != CitaMedica.Estado.CANCELADA) {
+            throw new BusinessRuleException("Solo se pueden eliminar citas CANCELADA (use cancelar para una PENDIENTE)");
+        }
+        if (cita.getExpediente() != null) {
+            throw new BusinessRuleException("No se puede eliminar la cita porque tiene expediente clínico asociado");
+        }
+        citaRepository.delete(cita);
     }
 }
