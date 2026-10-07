@@ -6,13 +6,11 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "citas_medicas",
-    uniqueConstraints = {
-        // Segunda barrera ante carreras de duplicado exacto (mismo vet + mismo
-        // instante). El solapamiento de 30 min se valida en el service con
-        // bloqueo pesimista; este constraint convierte un duplicado exacto
-        // concurrente en DataIntegrityViolationException -> 409.
-        @UniqueConstraint(name = "uk_cita_vet_fechahora", columnNames = {"veterinario_id", "fechaHora"})
-    },
+    // NOTA: sin UNIQUE(veterinario_id, fechaHora) a propósito. Ese constraint
+    // impedía reagendar un horario liberado por una cita CANCELADA (la fila
+    // cancelada retenía la clave para siempre). La protección contra
+    // duplicados concurrentes la dan las consultas bloqueantes
+    // (PESSIMISTIC_WRITE + gap locks) en CitaMedicaRepository.
     indexes = {
         @Index(name = "idx_cita_vet_fecha", columnList = "veterinario_id, fechaHora"),
         @Index(name = "idx_cita_mascota", columnList = "mascota_id"),
