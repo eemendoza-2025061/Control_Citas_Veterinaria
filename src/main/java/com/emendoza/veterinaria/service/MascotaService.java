@@ -4,7 +4,9 @@ import com.emendoza.veterinaria.dto.MascotaDto;
 import com.emendoza.veterinaria.entity.Mascota;
 import com.emendoza.veterinaria.entity.Usuario;
 import com.emendoza.veterinaria.exception.BusinessRuleException;
+import com.emendoza.veterinaria.exception.ForbiddenOperationException;
 import com.emendoza.veterinaria.exception.ResourceNotFoundException;
+import com.emendoza.veterinaria.repository.CitaMedicaRepository;
 import com.emendoza.veterinaria.repository.MascotaRepository;
 import com.emendoza.veterinaria.repository.UsuarioRepository;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +20,7 @@ public class MascotaService {
 
     private final MascotaRepository mascotaRepository;
     private final UsuarioRepository usuarioRepository;
+    private final CitaMedicaRepository citaRepository;
 
     private MascotaDto.Response toResponse(Mascota m) {
         return MascotaDto.Response.builder()
@@ -75,5 +78,43 @@ public class MascotaService {
         // Fuerza carga del cliente dentro de la transacción (evita LazyInitialization).
         if (m.getCliente() != null) m.getCliente().getNombre();
         return toResponse(m);
+    }
+
+    // CLIENTE solo actualiza sus propias mascotas; ADMIN cualquiera.
+    // El dueño nunca cambia (el DTO no trae clienteId).
+    @Transactional
+    public MascotaDto.Response actualizar(Long id, MascotaDto.UpdateRequest req, String emailAutenticado) {
+        Usuario auth = usuarioRepository.findByEmail(emailAutenticado)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario autenticado no encontrado"));
+        Mascota m = mascotaRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Mascota no encontrada"));
+        if (auth.getRol() == Usuario.Rol.CLIENTE
+                && !m.getCliente().getId().equals(auth.getId())) {
+            throw new ForbiddenOperationException("Solo puede modificar sus propias mascotas");
+        }
+        m.setNombre(req.getNombre());
+        m.setEspecie(req.getEspecie());
+        m.setRaza(req.getRaza());
+        m.setEdad(req.getEdad());
+        return toResponse(mascotaRepository.save(m));
+    }
+
+    // CLIENTE solo elimina sus propias mascotas; ADMIN cualquiera.
+    // No se permite borrar mascotas con citas asociadas (evita FK huérfanas e
+    // historiales inconsistentes): primero deben gestionarse sus citas.
+    @Transactional
+    public void eliminar(Long id, String emailAutenticado) {
+        Usuario auth = usuarioRepository.findByEmail(emailAutenticado)
+                .orElseThrow(() -> new ResourceNotFoundException("Usuario autenticado no encontrado"));
+        Mascota m = mascotaRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Mascota no encontrada"));
+        if (auth.getRol() == Usuario.Rol.CLIENTE
+                && !m.getCliente().getId().equals(auth.getId())) {
+            throw new ForbiddenOperationException("Solo puede eliminar sus propias mascotas");
+        }
+        if (citaRepository.existsByMascotaId(id)) {
+            throw new BusinessRuleException("No se puede eliminar la mascota porque tiene citas asociadas");
+        }
+        mascotaRepository.delete(m);
     }
 }
