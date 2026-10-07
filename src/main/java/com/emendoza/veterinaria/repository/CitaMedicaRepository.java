@@ -1,9 +1,11 @@
 package com.emendoza.veterinaria.repository;
 
 import com.emendoza.veterinaria.entity.CitaMedica;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -16,6 +18,14 @@ public interface CitaMedicaRepository extends JpaRepository<CitaMedica, Long> {
     // Solapan si |nueva - existente| < 30 min, es decir, la existente está en
     // (nueva-30min, nueva+30min) con desigualdad ESTRICTA: citas que solo se
     // tocan en el borde (p.ej. 10:00 y 10:30) NO solapan y se permiten.
+    //
+    // PESSIMISTIC_WRITE: la lectura bloqueante (a) ve datos ACTUALES en vez
+    // del snapshot de la transacción (MySQL REPEATABLE READ reutilizaría una
+    // foto vieja y dos reservas concurrentes no se verían entre sí) y
+    // (b) toma gap locks sobre el índice (veterinario_id, fechaHora), de modo
+    // que una inserción concurrente en el rango se bloquea hasta que esta
+    // transacción termina. Sin esto, el lock de la fila del vet no bastaba.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select case when count(c) > 0 then true else false end from CitaMedica c " +
            "where c.veterinario.id = :veterinarioId " +
            "and c.fechaHora > :inicio and c.fechaHora < :fin " +
@@ -28,6 +38,7 @@ public interface CitaMedicaRepository extends JpaRepository<CitaMedica, Long> {
 
     // Variante para reprogramar: igual que la anterior pero excluye la propia
     // cita (si no, cualquier update detectaría "cruce" consigo misma).
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select case when count(c) > 0 then true else false end from CitaMedica c " +
            "where c.veterinario.id = :veterinarioId " +
            "and c.fechaHora > :inicio and c.fechaHora < :fin " +
@@ -40,6 +51,8 @@ public interface CitaMedicaRepository extends JpaRepository<CitaMedica, Long> {
             @Param("excluirId") Long excluirId);
 
     // Regla 2: conteo de PENDIENTES del cliente en un día (JOIN a mascota.cliente).
+    // Bloqueante por la misma razón que el solapamiento (lectura actual).
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT COUNT(c) FROM CitaMedica c " +
            "WHERE c.mascota.cliente.id = :clienteId " +
            "AND c.estado = :estado " +
@@ -51,6 +64,7 @@ public interface CitaMedicaRepository extends JpaRepository<CitaMedica, Long> {
             @Param("estado") CitaMedica.Estado estado);
 
     // Variante para reprogramar: no cuenta la propia cita.
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("SELECT COUNT(c) FROM CitaMedica c " +
            "WHERE c.mascota.cliente.id = :clienteId " +
            "AND c.estado = :estado " +
