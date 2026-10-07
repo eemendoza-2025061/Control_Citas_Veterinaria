@@ -5,12 +5,14 @@ import com.emendoza.veterinaria.entity.CitaMedica;
 import com.emendoza.veterinaria.entity.ExpedienteClinico;
 import com.emendoza.veterinaria.entity.Usuario;
 import com.emendoza.veterinaria.exception.BusinessRuleException;
+import com.emendoza.veterinaria.exception.ForbiddenOperationException;
 import com.emendoza.veterinaria.exception.ResourceNotFoundException;
 import com.emendoza.veterinaria.repository.CitaMedicaRepository;
 import com.emendoza.veterinaria.repository.ExpedienteClinicoRepository;
 import com.emendoza.veterinaria.repository.MascotaRepository;
 import com.emendoza.veterinaria.repository.UsuarioRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -59,7 +61,12 @@ public class ExpedienteService {
                 .build();
         cita.setEstado(CitaMedica.Estado.COMPLETADA);
         citaRepository.save(cita);
-        return toResponse(expedienteRepository.save(exp));
+        try {
+            return toResponse(expedienteRepository.saveAndFlush(exp));
+        } catch (DataIntegrityViolationException e) {
+            // Carrera: dos registros simultáneos para la misma cita (unique cita_id).
+            throw new BusinessRuleException("La cita ya tiene un expediente registrado");
+        }
     }
 
     // Historial por mascota. CLIENTE solo ve sus mascotas; VET/ADMIN todo.
@@ -71,9 +78,36 @@ public class ExpedienteService {
                 .orElseThrow(() -> new ResourceNotFoundException("Mascota no encontrada"));
         if (auth.getRol() == Usuario.Rol.CLIENTE
                 && !mascota.getCliente().getId().equals(auth.getId())) {
-            throw new BusinessRuleException("Solo puede ver el historial de sus propias mascotas");
+            throw new ForbiddenOperationException("Solo puede ver el historial de sus propias mascotas");
         }
         return expedienteRepository.findByCitaMascotaIdOrderByFechaRegistroDesc(mascotaId)
                 .stream().map(this::toResponse).toList();
+    }
+
+    // VET/ADMIN: corrige diagnóstico/tratamiento/peso. La cita NO cambia
+    // (el DTO no trae citaId).
+    @Transactional
+    public ExpedienteDto.Response actualizar(Long id, ExpedienteDto.UpdateRequest req) {
+        ExpedienteClinico exp = expedienteRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Expediente no encontrado"));
+        exp.setDiagnostico(req.getDiagnostico());
+        exp.setTratamiento(req.getTratamiento());
+        exp.setPesoKg(req.getPesoKg());
+        return toResponse(expedienteRepository.save(exp));
+    }
+
+    // Solo ADMIN: borra el expediente. Si su cita había quedado COMPLETADA
+    // por este expediente, vuelve a PENDIENTE para no dejar una cita
+    // "completada" sin historial clínico (consistencia del dominio).
+    @Transactional
+    public void eliminar(Long id) {
+        ExpedienteClinico exp = expedienteRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Expediente no encontrado"));
+        CitaMedica cita = exp.getCita();
+        expedienteRepository.delete(exp);
+        if (cita != null && cita.getEstado() == CitaMedica.Estado.COMPLETADA) {
+            cita.setEstado(CitaMedica.Estado.PENDIENTE);
+            citaRepository.save(cita);
+        }
     }
 }
